@@ -7,34 +7,48 @@
  * @flow
  */
 
-import type {Dispatcher as DispatcherType} from 'react-reconciler/src/ReactFiberHooks';
+import type {Dispatcher as DispatcherType} from 'react-reconciler/src/ReactInternalTypes';
 import type {ThreadID} from './ReactThreadIDAllocator';
-import type {ReactContext} from 'shared/ReactTypes';
+import type {OpaqueIDType} from 'react-reconciler/src/ReactFiberHostConfig';
+
+import type {
+  MutableSource,
+  MutableSourceGetSnapshotFn,
+  MutableSourceSubscribeFn,
+  ReactContext,
+  ReactEventResponderListener,
+} from 'shared/ReactTypes';
+import type {SuspenseConfig} from 'react-reconciler/src/ReactFiberSuspenseConfig';
+import type {ReactDOMListenerMap} from '../shared/ReactDOMTypes';
 
 import {validateContextBounds} from './ReactPartialRendererContext';
+import {makeServerId} from '../client/ReactDOMHostConfig';
 
 import invariant from 'shared/invariant';
-import warning from 'shared/warning';
 import is from 'shared/objectIs';
 
 type BasicStateAction<S> = (S => S) | S;
 type Dispatch<A> = A => void;
 
-type Update<A> = {
+type Update<A> = {|
   action: A,
   next: Update<A> | null,
-};
+|};
 
-type UpdateQueue<A> = {
+type UpdateQueue<A> = {|
   last: Update<A> | null,
   dispatch: any,
-};
+|};
 
-type Hook = {
+type Hook = {|
   memoizedState: any,
   queue: UpdateQueue<any> | null,
   next: Hook | null,
-};
+|};
+
+type TimeoutConfig = {|
+  timeoutMs: number,
+|};
 
 let currentlyRenderingComponent: Object | null = null;
 let firstWorkInProgressHook: Hook | null = null;
@@ -57,17 +71,22 @@ let currentHookNameInDev: ?string;
 function resolveCurrentlyRenderingComponent(): Object {
   invariant(
     currentlyRenderingComponent !== null,
-    'Hooks can only be called inside the body of a function component. ' +
-      '(https://fb.me/react-invalid-hook-call)',
+    'Invalid hook call. Hooks can only be called inside of the body of a function component. This could happen for' +
+      ' one of the following reasons:\n' +
+      '1. You might have mismatching versions of React and the renderer (such as React DOM)\n' +
+      '2. You might be breaking the Rules of Hooks\n' +
+      '3. You might have more than one copy of React in the same app\n' +
+      'See https://fb.me/react-invalid-hook-call for tips about how to debug and fix this problem.',
   );
   if (__DEV__) {
-    warning(
-      !isInHookUserCodeInDev,
-      'Do not call Hooks inside useEffect(...), useMemo(...), or other built-in Hooks. ' +
-        'You can only call Hooks at the top level of your React function. ' +
-        'For more information, see ' +
-        'https://fb.me/rules-of-hooks',
-    );
+    if (isInHookUserCodeInDev) {
+      console.error(
+        'Do not call Hooks inside useEffect(...), useMemo(...), or other built-in Hooks. ' +
+          'You can only call Hooks at the top level of your React function. ' +
+          'For more information, see ' +
+          'https://fb.me/rules-of-hooks',
+      );
+    }
   }
   return currentlyRenderingComponent;
 }
@@ -78,8 +97,7 @@ function areHookInputsEqual(
 ) {
   if (prevDeps === null) {
     if (__DEV__) {
-      warning(
-        false,
+      console.error(
         '%s received a final argument during this render, but not during ' +
           'the previous render. Even though the final argument is optional, ' +
           'its type cannot change between renders.',
@@ -93,8 +111,7 @@ function areHookInputsEqual(
     // Don't bother comparing lengths in prod because these arrays should be
     // passed inline.
     if (nextDeps.length !== prevDeps.length) {
-      warning(
-        false,
+      console.error(
         'The final argument passed to %s changed size between renders. The ' +
           'order and size of this array must remain constant.\n\n' +
           'Previous: %s\n' +
@@ -210,16 +227,17 @@ function readContext<T>(
   context: ReactContext<T>,
   observedBits: void | number | boolean,
 ): T {
-  let threadID = currentThreadID;
+  const threadID = currentThreadID;
   validateContextBounds(context, threadID);
   if (__DEV__) {
-    warning(
-      !isInHookUserCodeInDev,
-      'Context can only be read while React is rendering. ' +
-        'In classes, you can read it in the render method or getDerivedStateFromProps. ' +
-        'In function components, you can read it directly in the function body, but not ' +
-        'inside Hooks like useReducer() or useMemo().',
-    );
+    if (isInHookUserCodeInDev) {
+      console.error(
+        'Context can only be read while React is rendering. ' +
+          'In classes, you can read it in the render method or getDerivedStateFromProps. ' +
+          'In function components, you can read it directly in the function body, but not ' +
+          'inside Hooks like useReducer() or useMemo().',
+      );
+    }
   }
   return context[threadID];
 }
@@ -232,12 +250,13 @@ function useContext<T>(
     currentHookNameInDev = 'useContext';
   }
   resolveCurrentlyRenderingComponent();
-  let threadID = currentThreadID;
+  const threadID = currentThreadID;
   validateContextBounds(context, threadID);
   return context[threadID];
 }
 
 function basicStateReducer<S>(state: S, action: BasicStateAction<S>): S {
+  // $FlowFixMe: Flow doesn't like mixed types
   return typeof action === 'function' ? action(state) : action;
 }
 
@@ -360,7 +379,7 @@ function useMemo<T>(nextCreate: () => T, deps: Array<mixed> | void | null): T {
   return nextValue;
 }
 
-function useRef<T>(initialValue: T): {current: T} {
+function useRef<T>(initialValue: T): {|current: T|} {
   currentlyRenderingComponent = resolveCurrentlyRenderingComponent();
   workInProgressHook = createWorkInProgressHook();
   const previousRef = workInProgressHook.memoizedState;
@@ -382,15 +401,15 @@ export function useLayoutEffect(
 ) {
   if (__DEV__) {
     currentHookNameInDev = 'useLayoutEffect';
+    console.error(
+      'useLayoutEffect does nothing on the server, because its effect cannot ' +
+        "be encoded into the server renderer's output format. This will lead " +
+        'to a mismatch between the initial, non-hydrated UI and the intended ' +
+        'UI. To avoid this, useLayoutEffect should only be used in ' +
+        'components that render exclusively on the client. ' +
+        'See https://fb.me/react-uselayouteffect-ssr for common fixes.',
+    );
   }
-  warning(
-    false,
-    'useLayoutEffect does nothing on the server, because its effect cannot ' +
-      "be encoded into the server renderer's output format. This will lead " +
-      'to a mismatch between the initial, non-hydrated UI and the intended ' +
-      'UI. To avoid this, useLayoutEffect should only be used in ' +
-      'components that render exclusively on the client.',
-  );
 }
 
 function dispatchAction<A>(
@@ -442,6 +461,51 @@ export function useCallback<T>(
   return callback;
 }
 
+function useResponder(responder, props): ReactEventResponderListener<any, any> {
+  return {
+    props,
+    responder,
+  };
+}
+
+// TODO Decide on how to implement this hook for server rendering.
+// If a mutation occurs during render, consider triggering a Suspense boundary
+// and falling back to client rendering.
+function useMutableSource<Source, Snapshot>(
+  source: MutableSource<Source>,
+  getSnapshot: MutableSourceGetSnapshotFn<Source, Snapshot>,
+  subscribe: MutableSourceSubscribeFn<Source, Snapshot>,
+): Snapshot {
+  resolveCurrentlyRenderingComponent();
+  return getSnapshot(source._source);
+}
+
+function useDeferredValue<T>(value: T, config: TimeoutConfig | null | void): T {
+  resolveCurrentlyRenderingComponent();
+  return value;
+}
+
+function useTransition(
+  config: SuspenseConfig | null | void,
+): [(callback: () => void) => void, boolean] {
+  resolveCurrentlyRenderingComponent();
+  const startTransition = callback => {
+    callback();
+  };
+  return [startTransition, false];
+}
+
+function useOpaqueIdentifier(): OpaqueIDType {
+  return makeServerId();
+}
+
+function useEvent(event: any): ReactDOMListenerMap {
+  return {
+    clear: noop,
+    setListener: noop,
+  };
+}
+
 function noop(): void {}
 
 export let currentThreadID: ThreadID = 0;
@@ -465,4 +529,11 @@ export const Dispatcher: DispatcherType = {
   useEffect: noop,
   // Debugging effect
   useDebugValue: noop,
+  useResponder,
+  useDeferredValue,
+  useTransition,
+  useEvent,
+  useOpaqueIdentifier,
+  // Subscriptions are not setup in a server environment.
+  useMutableSource,
 };

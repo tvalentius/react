@@ -34,29 +34,26 @@ function getPackageName(name) {
   return name;
 }
 
-function getBundleOutputPaths(bundleType, filename, packageName) {
+function getBundleOutputPath(bundleType, filename, packageName) {
   switch (bundleType) {
     case NODE_DEV:
     case NODE_PROD:
     case NODE_PROFILING:
-      return [`build/node_modules/${packageName}/cjs/${filename}`];
+      return `build/node_modules/${packageName}/cjs/${filename}`;
     case UMD_DEV:
     case UMD_PROD:
     case UMD_PROFILING:
-      return [
-        `build/node_modules/${packageName}/umd/${filename}`,
-        `build/dist/${filename}`,
-      ];
+      return `build/node_modules/${packageName}/umd/${filename}`;
     case FB_WWW_DEV:
     case FB_WWW_PROD:
     case FB_WWW_PROFILING:
-      return [`build/facebook-www/${filename}`];
+      return `build/facebook-www/${filename}`;
     case RN_OSS_DEV:
     case RN_OSS_PROD:
     case RN_OSS_PROFILING:
       switch (packageName) {
         case 'react-native-renderer':
-          return [`build/react-native/oss/${filename}`];
+          return `build/react-native/implementations/${filename}`;
         default:
           throw new Error('Unknown RN package.');
       }
@@ -65,7 +62,10 @@ function getBundleOutputPaths(bundleType, filename, packageName) {
     case RN_FB_PROFILING:
       switch (packageName) {
         case 'react-native-renderer':
-          return [`build/react-native/fb/${filename}`];
+          return `build/react-native/implementations/${filename.replace(
+            /\.js$/,
+            '.fb.js'
+          )}`;
         default:
           throw new Error('Unknown RN package.');
       }
@@ -82,19 +82,14 @@ async function copyWWWShims() {
 }
 
 async function copyRNShims() {
-  await Promise.all([
-    // React Native
-    asyncCopyTo(`${__dirname}/shims/react-native`, 'build/react-native/shims'),
-    asyncCopyTo(
-      require.resolve('shared/ReactTypes.js'),
-      'build/react-native/shims/ReactTypes.js'
-    ),
-    asyncCopyTo(
-      require.resolve('react-native-renderer/src/ReactNativeTypes.js'),
-      'build/react-native/shims/ReactNativeTypes.js'
-    ),
-    asyncCopyTo(`${__dirname}/shims/react-native-fb`, 'build/react-native/fb'),
-  ]);
+  await asyncCopyTo(
+    `${__dirname}/shims/react-native`,
+    'build/react-native/shims'
+  );
+  await asyncCopyTo(
+    require.resolve('react-native-renderer/src/ReactNativeTypes.js'),
+    'build/react-native/shims/ReactNativeTypes.js'
+  );
 }
 
 async function copyAllShims() {
@@ -133,9 +128,9 @@ async function prepareNpmPackage(name) {
     ),
     asyncCopyTo(`packages/${name}/npm`, `build/node_modules/${name}`),
   ]);
-  const tgzName = (await asyncExecuteCommand(
-    `npm pack build/node_modules/${name}`
-  )).trim();
+  const tgzName = (
+    await asyncExecuteCommand(`npm pack build/node_modules/${name}`)
+  ).trim();
   await asyncRimRaf(`build/node_modules/${name}`);
   await asyncExtractTar(getTarOptions(tgzName, name));
   unlinkSync(tgzName);
@@ -155,6 +150,6 @@ async function prepareNpmPackages() {
 module.exports = {
   copyAllShims,
   getPackageName,
-  getBundleOutputPaths,
+  getBundleOutputPath,
   prepareNpmPackages,
 };

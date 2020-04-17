@@ -54,6 +54,41 @@ function isComponentName(node) {
   }
 }
 
+function isReactFunction(node, functionName) {
+  return (
+    node.name === functionName ||
+    (node.type === 'MemberExpression' &&
+      node.object.name === 'React' &&
+      node.property.name === functionName)
+  );
+}
+
+/**
+ * Checks if the node is a callback argument of forwardRef. This render function
+ * should follow the rules of hooks.
+ */
+
+function isForwardRefCallback(node) {
+  return !!(
+    node.parent &&
+    node.parent.callee &&
+    isReactFunction(node.parent.callee, 'forwardRef')
+  );
+}
+
+/**
+ * Checks if the node is a callback argument of React.memo. This anonymous
+ * functional component should follow the rules of hooks.
+ */
+
+function isMemoCallback(node) {
+  return !!(
+    node.parent &&
+    node.parent.callee &&
+    isReactFunction(node.parent.callee, 'memo')
+  );
+}
+
 function isInsideComponentOrHook(node) {
   while (node) {
     const functionName = getFunctionName(node);
@@ -62,12 +97,24 @@ function isInsideComponentOrHook(node) {
         return true;
       }
     }
+    if (isForwardRefCallback(node) || isMemoCallback(node)) {
+      return true;
+    }
     node = node.parent;
   }
   return false;
 }
 
 export default {
+  meta: {
+    type: 'problem',
+    docs: {
+      description: 'enforces the Rules of Hooks',
+      category: 'Possible Errors',
+      recommended: true,
+      url: 'https://reactjs.org/docs/hooks-rules.html',
+    },
+  },
   create(context) {
     const codePathReactHooksMapStack = [];
     const codePathSegmentStack = [];
@@ -114,31 +161,33 @@ export default {
          * Populates `cyclic` with cyclic segments.
          */
 
-        function countPathsFromStart(segment) {
+        function countPathsFromStart(segment, pathHistory) {
           const {cache} = countPathsFromStart;
           let paths = cache.get(segment.id);
+          const pathList = new Set(pathHistory);
 
-          // If `paths` is null then we've found a cycle! Add it to `cyclic` and
-          // any other segments which are a part of this cycle.
-          if (paths === null) {
-            if (cyclic.has(segment.id)) {
-              return 0;
-            } else {
-              cyclic.add(segment.id);
-              for (const prevSegment of segment.prevSegments) {
-                countPathsFromStart(prevSegment);
-              }
-              return 0;
+          // If `pathList` includes the current segment then we've found a cycle!
+          // We need to fill `cyclic` with all segments inside cycle
+          if (pathList.has(segment.id)) {
+            const pathArray = [...pathList];
+            const cyclicSegments = pathArray.slice(
+              pathArray.indexOf(segment.id) + 1,
+            );
+            for (const cyclicSegment of cyclicSegments) {
+              cyclic.add(cyclicSegment);
             }
+
+            return 0;
           }
+
+          // add the current segment to pathList
+          pathList.add(segment.id);
 
           // We have a cached `paths`. Return it.
           if (paths !== undefined) {
             return paths;
           }
 
-          // Compute `paths` and cache it. Guarding against cycles.
-          cache.set(segment.id, null);
           if (codePath.thrownSegments.includes(segment)) {
             paths = 0;
           } else if (segment.prevSegments.length === 0) {
@@ -146,7 +195,7 @@ export default {
           } else {
             paths = 0;
             for (const prevSegment of segment.prevSegments) {
-              paths += countPathsFromStart(prevSegment);
+              paths += countPathsFromStart(prevSegment, pathList);
             }
           }
 
@@ -183,31 +232,33 @@ export default {
          * Populates `cyclic` with cyclic segments.
          */
 
-        function countPathsToEnd(segment) {
+        function countPathsToEnd(segment, pathHistory) {
           const {cache} = countPathsToEnd;
           let paths = cache.get(segment.id);
+          const pathList = new Set(pathHistory);
 
-          // If `paths` is null then we've found a cycle! Add it to `cyclic` and
-          // any other segments which are a part of this cycle.
-          if (paths === null) {
-            if (cyclic.has(segment.id)) {
-              return 0;
-            } else {
-              cyclic.add(segment.id);
-              for (const nextSegment of segment.nextSegments) {
-                countPathsToEnd(nextSegment);
-              }
-              return 0;
+          // If `pathList` includes the current segment then we've found a cycle!
+          // We need to fill `cyclic` with all segments inside cycle
+          if (pathList.has(segment.id)) {
+            const pathArray = Array.from(pathList);
+            const cyclicSegments = pathArray.slice(
+              pathArray.indexOf(segment.id) + 1,
+            );
+            for (const cyclicSegment of cyclicSegments) {
+              cyclic.add(cyclicSegment);
             }
+
+            return 0;
           }
+
+          // add the current segment to pathList
+          pathList.add(segment.id);
 
           // We have a cached `paths`. Return it.
           if (paths !== undefined) {
             return paths;
           }
 
-          // Compute `paths` and cache it. Guarding against cycles.
-          cache.set(segment.id, null);
           if (codePath.thrownSegments.includes(segment)) {
             paths = 0;
           } else if (segment.nextSegments.length === 0) {
@@ -215,11 +266,11 @@ export default {
           } else {
             paths = 0;
             for (const nextSegment of segment.nextSegments) {
-              paths += countPathsToEnd(nextSegment);
+              paths += countPathsToEnd(nextSegment, pathList);
             }
           }
-          cache.set(segment.id, paths);
 
+          cache.set(segment.id, paths);
           return paths;
         }
 
@@ -290,10 +341,11 @@ export default {
         // `undefined` then we know either that we have an anonymous function
         // expression or our code path is not in a function. In both cases we
         // will want to error since neither are React function components or
-        // hook functions.
+        // hook functions - unless it is an anonymous function argument to
+        // forwardRef or memo.
         const codePathFunctionName = getFunctionName(codePathNode);
 
-        // This is a valid code path for React hooks if we are direcly in a React
+        // This is a valid code path for React hooks if we are directly in a React
         // function component or we are in a hook function.
         const isSomewhereInsideComponentOrHook = isInsideComponentOrHook(
           codePathNode,
@@ -301,7 +353,7 @@ export default {
         const isDirectlyInsideComponentOrHook = codePathFunctionName
           ? isComponentName(codePathFunctionName) ||
             isHook(codePathFunctionName)
-          : false;
+          : isForwardRefCallback(codePathNode) || isMemoCallback(codePathNode);
 
         // Compute the earliest finalizer level using information from the
         // cache. We expect all reachable final segments to have a cache entry
@@ -418,23 +470,27 @@ export default {
                 codePathNode.parent.type === 'ClassProperty') &&
               codePathNode.parent.value === codePathNode
             ) {
-              // Ignore class methods for now because they produce too many
-              // false positives due to feature flag checks. We're less
-              // sensitive to them in classes because hooks would produce
-              // runtime errors in classes anyway, and because a use*()
-              // call in a class, if it works, is unambigously *not* a hook.
+              // Custom message for hooks inside a class
+              const message =
+                `React Hook "${context.getSource(hook)}" cannot be called ` +
+                'in a class component. React Hooks must be called in a ' +
+                'React function component or a custom React Hook function.';
+              context.report({node: hook, message});
             } else if (codePathFunctionName) {
               // Custom message if we found an invalid function name.
               const message =
                 `React Hook "${context.getSource(hook)}" is called in ` +
                 `function "${context.getSource(codePathFunctionName)}" ` +
-                'which is neither a React function component or a custom ' +
+                'that is neither a React function component nor a custom ' +
                 'React Hook function.';
               context.report({node: hook, message});
             } else if (codePathNode.type === 'Program') {
-              // For now, ignore if it's in top level scope.
-              // We could warn here but there are false positives related
-              // configuring libraries like `history`.
+              // These are dangerous if you have inline requires enabled.
+              const message =
+                `React Hook "${context.getSource(hook)}" cannot be called ` +
+                'at the top level. React Hooks must be called in a ' +
+                'React function component or a custom React Hook function.';
+              context.report({node: hook, message});
             } else {
               // Assume in all other cases the user called a hook in some
               // random function callback. This should usually be true for
@@ -476,7 +532,7 @@ export default {
 };
 
 /**
- * Gets tbe static name of a function AST node. For function declarations it is
+ * Gets the static name of a function AST node. For function declarations it is
  * easy. For anonymous function expressions it is much harder. If you search for
  * `IsAnonymousFunctionDefinition()` in the ECMAScript spec you'll find places
  * where JS gives anonymous function expressions names. We roughly detect the
